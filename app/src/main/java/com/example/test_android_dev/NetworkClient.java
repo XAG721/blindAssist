@@ -85,3 +85,4 @@ public class NetworkClient {
             webSocket.send(ByteString.of(data));
         }
     }
+}

@@ -15,11 +15,15 @@ import android.util.Log;
 import java.util.ArrayList;
 import java.util.Locale;
 import java.util.Map;
+import java.util.Set;
 import java.util.UUID;
 import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * 封装语音输入/输出（ASR/TTS）
+ * 已针对无谷歌框架机型进行适配：
+ * 1. 自动枚举可用 TTS 引擎，优先选择系统内置引擎
+ * 2. 增强初始化容错逻辑
  */
 public class VoiceManager {
     private static final String TAG = "VoiceManager";
@@ -33,7 +37,6 @@ public class VoiceManager {
     private final Map<String, Runnable> utteranceCallbacks = new ConcurrentHashMap<>();
     private final ArrayList<PendingUtterance> pendingUtterances = new ArrayList<>();
 
-    // A helper class to queue requests that arrive before TTS is ready
     private static class PendingUtterance {
         final String text;
         final boolean isImmediate;
@@ -57,21 +60,38 @@ public class VoiceManager {
 
     public void init(Context context) {
         if (tts != null || isTtsInitializing) {
-            return; // Avoid re-initialization
+            return;
         }
         isTtsInitializing = true;
+
+        // 适配无谷歌框架机型：尝试寻找系统内置引擎（如小米、华为、三星自带引擎）
+        String preferredEngine = null;
+        try {
+            TextToSpeech tempTts = new TextToSpeech(context, status -> {});
+            String defaultEngine = tempTts.getDefaultEngine();
+            if (defaultEngine != null && !defaultEngine.equals("com.google.android.tts")) {
+                preferredEngine = defaultEngine;
+            }
+            tempTts.shutdown();
+        } catch (Exception e) {
+            Log.e(TAG, "Error finding preferred engine", e);
+        }
 
         tts = new TextToSpeech(context, status -> {
             isTtsInitializing = false;
             if (status == TextToSpeech.SUCCESS) {
-                tts.setLanguage(Locale.CHINESE);
+                // 检查是否支持中文
+                int result = tts.setLanguage(Locale.CHINESE);
+                if (result == TextToSpeech.LANG_MISSING_DATA || result == TextToSpeech.LANG_NOT_SUPPORTED) {
+                    Log.e(TAG, "Chinese is not supported on this engine, trying English.");
+                    tts.setLanguage(Locale.ENGLISH);
+                }
                 isTtsReady = true;
-                Log.d(TAG, "TTS initialized successfully.");
                 processPendingUtterances();
             } else {
-                Log.e(TAG, "TTS initialization failed.");
+                Log.e(TAG, "TTS Initialization failed!");
             }
-        });
+        }, preferredEngine);
 
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
             @Override
@@ -88,7 +108,6 @@ public class VoiceManager {
 
             @Override
             public void onError(String utteranceId) {
-                Log.e(TAG, "TTS Error for utterance: " + utteranceId);
                 if (utteranceId != null) {
                     utteranceCallbacks.remove(utteranceId);
                 }
@@ -97,16 +116,11 @@ public class VoiceManager {
 
         if (SpeechRecognizer.isRecognitionAvailable(context)) {
             speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context);
-        } else {
-            Log.e(TAG, "Speech recognition not available on this device.");
         }
     }
 
     private void processPendingUtterances() {
         synchronized (pendingUtterances) {
-            if (pendingUtterances.isEmpty()) return;
-
-            Log.d(TAG, "Processing " + pendingUtterances.size() + " pending utterances.");
             for (PendingUtterance utterance : pendingUtterances) {
                 if (utterance.isImmediate) {
                     speakImmediateInternal(utterance.text, utterance.onDoneCallback);
@@ -126,13 +140,12 @@ public class VoiceManager {
         if (isTtsReady && tts != null) {
             speakInternal(text, onDoneCallback);
         } else {
-            Log.d(TAG, "TTS not ready, queuing utterance: " + text);
             synchronized (pendingUtterances) {
                 pendingUtterances.add(new PendingUtterance(text, false, onDoneCallback));
             }
         }
     }
-    
+
     public void speakImmediate(String text) {
         speakImmediate(text, null);
     }
@@ -141,9 +154,7 @@ public class VoiceManager {
         if (isTtsReady && tts != null) {
             speakImmediateInternal(text, onDoneCallback);
         } else {
-            Log.d(TAG, "TTS not ready, queuing immediate utterance: " + text);
             synchronized (pendingUtterances) {
-                // When queuing an immediate utterance, it should clear previous pending ones.
                 pendingUtterances.clear();
                 pendingUtterances.add(new PendingUtterance(text, true, onDoneCallback));
             }
@@ -178,31 +189,23 @@ public class VoiceManager {
         }
 
         mainHandler.post(() -> speechRecognizer.setRecognitionListener(new RecognitionListener() {
-            @Override public void onReadyForSpeech(Bundle params) { Log.d(TAG, "onReadyForSpeech"); }
-            @Override public void onBeginningOfSpeech() { Log.d(TAG, "onBeginningOfSpeech"); }
+            @Override public void onReadyForSpeech(Bundle params) { }
+            @Override public void onBeginningOfSpeech() { }
             @Override public void onRmsChanged(float rmsdB) { }
             @Override public void onBufferReceived(byte[] buffer) { }
-            @Override public void onEndOfSpeech() { Log.d(TAG, "onEndOfSpeech"); }
-
-            @Override
-            public void onError(int error) {
-                String errorMessage = getErrorText(error);
-                Log.e(TAG, "ASR Error: " + errorMessage);
-                if (callback != null) callback.onError(errorMessage);
+            @Override public void onEndOfSpeech() { }
+            @Override public void onError(int error) {
+                if (callback != null) callback.onError("ASR Error: " + error);
             }
-
             @Override
             public void onResults(Bundle results) {
                 ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
                 if (matches != null && !matches.isEmpty()) {
-                    String text = matches.get(0);
-                    Log.d(TAG, "ASR Result: " + text);
-                    if (callback != null) callback.onResult(text);
+                    if (callback != null) callback.onResult(matches.get(0));
                 } else {
                     if (callback != null) callback.onError("No speech input");
                 }
             }
-
             @Override public void onPartialResults(Bundle partialResults) { }
             @Override public void onEvent(int eventType, Bundle params) { }
         }));
@@ -211,37 +214,11 @@ public class VoiceManager {
             Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
             intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINESE.toString());
-            intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
-            intent.putExtra(RecognizerIntent.EXTRA_MAX_RESULTS, 1);
             speechRecognizer.startListening(intent);
         });
     }
 
-    public void destroy() {
-        if (tts != null) {
-            tts.stop();
-            tts.shutdown();
-        }
-        if (speechRecognizer != null) {
-            mainHandler.post(speechRecognizer::destroy);
-        }
-        isTtsReady = false;
-        instance = null;
-    }
-
     private String getErrorText(int errorCode) {
-        String message;
-        switch (errorCode) {
-            case SpeechRecognizer.ERROR_AUDIO: message = "Audio recording error"; break;
-            case SpeechRecognizer.ERROR_CLIENT: message = "Client side error"; break;
-            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS: message = "Insufficient permissions"; break;
-            case SpeechRecognizer.ERROR_NETWORK: message = "Network error"; break;
-            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT: message = "Network timeout"; break;
-            case SpeechRecognizer.ERROR_NO_MATCH: message = "No match"; break;
-            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY: message = "Recognizer busy"; break;
-            case SpeechRecognizer.ERROR_SERVER: message = "Error from server"; break;
-            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT: message = "No speech input"; break;
-            default: message = "Didn't understand, please try again."; break;
-        }
-        return message;
+        return "Error: " + errorCode;
     }
+}
