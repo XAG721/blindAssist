@@ -400,14 +400,9 @@ Spring Boot 服务需要连接远程或局域网内的 AutoGLM 模型服务。
 * **配置操作**:
   将 IP 地址修改为 AutoGLM 模型实际运行的服务器 IP（保持端口 `8080` 不变）。
     ```java
-    // 修改前 (示例)
-    private static final String PYTHON_SERVER_BASE_URI = "ws://localhost:8080/ws/agent/";
-
-    // 修改后 (当前环境)
-    private static final String PYTHON_SERVER_BASE_URI = "ws://10.25.144.51:8080/ws/agent/";
+    private static final String PYTHON_SERVER_BASE_URI = "ws://your_model_ip:8080/ws/agent/";
     ```
 
----
 
 #### 2. 客户端配置 (Android App → Spring Boot)
 Android 应用需要连接本地运行的 Spring Boot 服务。根据网络环境不同，分为两种配置方案。
