@@ -183,6 +183,7 @@ public class AgentManager {
                     // 4. 等待 UI 响应并进入下一轮
                     // 根据动作类型决定等待时间，比如 Launch App 需要等久一点
                     long waitTime = 2000;
+                    if ("Tap".equals(actionMap.get("action"))) waitTime = 1000;
                     if ("Launch".equals(actionMap.get("action"))) waitTime = 5000;
                     if ("Type".equals(actionMap.get("action"))) waitTime = 3000;
 
