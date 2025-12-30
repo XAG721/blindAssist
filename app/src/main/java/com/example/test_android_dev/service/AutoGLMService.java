@@ -10,6 +10,9 @@ import android.os.Looper;
 import android.util.Log;
 import android.view.accessibility.AccessibilityNodeInfo;
 import android.widget.Toast;
+import android.content.ClipboardManager;
+import android.content.ClipData;
+import android.content.Context;
 
 import java.util.Map;
 import java.util.Objects;
@@ -135,23 +138,97 @@ public class AutoGLMService extends AccessibilityService{
     // 3. Type (输入文本)
     private boolean doType(String text) {
         if (text == null) return false;
-        // 策略：找到当前获得焦点的可编辑节点，设置文本
-        AccessibilityNodeInfo root = getRootInActiveWindow();
-        if (root == null) return false;
 
-        AccessibilityNodeInfo focusNode = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
-        if (focusNode != null && focusNode.isEditable()) {
+        // 1. 尝试多次获取焦点 (解决键盘弹出延迟的时序问题)
+        AccessibilityNodeInfo focusNode = null;
+        for (int i = 0; i < 5; i++) { // 最多重试 5 次，共等待 1 秒
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root == null) {
+                Log.e(TAG, "无法获取窗口内容，请确保 canRetrieveWindowContent 权限已开启");
+                return false;
+            }
+
+            focusNode = root.findFocus(AccessibilityNodeInfo.FOCUS_INPUT);
+            if (focusNode != null && focusNode.isEditable()) {
+                break; // 找到了，跳出循环
+            }
+
+            // 没找到，回收 root 并在 200ms 后重试
+            // 注意：AccessibilityNodeInfo 用完如果不回收，虽不会马上崩，但最好习惯性回收
+            // 这里 root 是局部变量，下次循环会覆盖，但最好还是严谨些，不过为了代码简洁先略过 root.recycle()
+            // 重点是等待：
+            try {
+                Log.d(TAG, "第 " + (i + 1) + " 次尝试寻找焦点...");
+                Thread.sleep(200);
+            } catch (InterruptedException e) {
+                e.printStackTrace();
+            }
+        }
+
+        // 2. 如果标准方法还是找不到，尝试“暴力”遍历整个界面找第一个可编辑的框 (兜底方案)
+        if (focusNode == null) {
+            Log.w(TAG, "标准焦点查找失败，尝试遍历节点树查找可编辑控件...");
+            AccessibilityNodeInfo root = getRootInActiveWindow();
+            if (root != null) {
+                focusNode = findEditableNode(root);
+            }
+        }
+
+        // 3. 执行输入
+        if (focusNode != null) {
+        // 方案 A: 优先尝试“剪贴板粘贴” (解决微信不显示文字、不显示发送按钮的问题)
+            try {
+                ClipboardManager clipboard = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                ClipData clip = ClipData.newPlainText("label", text);
+                clipboard.setPrimaryClip(clip);
+
+                // 执行粘贴动作
+                boolean pasteResult = focusNode.performAction(AccessibilityNodeInfo.ACTION_PASTE);
+
+                if (pasteResult) {
+                    Log.d(TAG, "粘贴输入成功");
+                    focusNode.recycle();
+                    return true;
+                } else {
+                    Log.w(TAG, "粘贴失败，尝试回退到 SET_TEXT");
+                }
+            } catch (Exception e) {
+                Log.e(TAG, "剪贴板操作异常: " + e.getMessage());
+            }
+
+            // 方案 B: 如果粘贴不支持，回退到原始的 SET_TEXT (兼容其他简单 App)
             Bundle arguments = new Bundle();
             arguments.putCharSequence(AccessibilityNodeInfo.ACTION_ARGUMENT_SET_TEXT_CHARSEQUENCE, text);
-            boolean result = focusNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
+            boolean setResult = focusNode.performAction(AccessibilityNodeInfo.ACTION_SET_TEXT, arguments);
+
             focusNode.recycle();
-            return result;
+            Log.d(TAG, "SET_TEXT 输入结果: " + setResult);
+            return setResult;
         } else {
-            // 如果没找到焦点，尝试粘贴 (需要 Android 5.0+)
-            // Clipboard logic can be added here
-            Log.w(TAG, "未找到输入框焦点");
+            Log.e(TAG, "彻底未找到输入框，Type 操作失败");
             return false;
         }
+    }
+
+    // 辅助方法：递归查找第一个可编辑节点
+    private AccessibilityNodeInfo findEditableNode(AccessibilityNodeInfo node) {
+        if (node == null) return null;
+
+        if (node.isEditable()) {
+            return node; // 找到了
+        }
+
+        for (int i = 0; i < node.getChildCount(); i++) {
+            AccessibilityNodeInfo child = node.getChild(i);
+            if (child != null) {
+                AccessibilityNodeInfo result = findEditableNode(child);
+                if (result != null) {
+                    return result; // 在子节点里找到了，直接返回
+                }
+                child.recycle(); // 没找到就回收这个子节点
+            }
+        }
+        return null;
     }
 
     // 4. Swipe (滑动)
