@@ -434,3 +434,53 @@ Android 应用需要连接本地运行的 Spring Boot 服务。根据网络环�
     private static final String SERVER_URL = "ws://192.168.1.100:8090/ws/agent";
     ```
 2.  **注意事项**：确保电脑防火墙已允许 8090 端口的入站连接。
+
+
+### 2026-01-04 修改
+
+feat: 合并前端语音交互界面与后端AutoGLM控制逻辑
+
+本次更新将前端开发的语音交互UI与后端开发的AutoGLM控制逻辑进行了整合，实现了完整的"按住说话→语音识别→发送指令→AI控制手机"的闭环流程。
+
+#### 主要变更：
+
+1. **双界面模式支持**：
+   - **用户模式**（默认）：简洁的"按住说话"语音交互界面，适合最终用户使用
+   - **调试模式**：手动输入指令的测试界面，通过 `Config.DEBUG_MODE` 开关控制
+   - 两套界面共用同一套后端逻辑（AgentManager、AutoGLMService）
+
+2. **语音识别(ASR)完善**：
+   - 完整实现了 `VoiceManager.startListening()` 方法
+   - 支持中文语音识别（使用 Android 原生 SpeechRecognizer）
+   - 增加了语音识别不可用时的文本输入备选方案
+
+3. **配置开关统一管理**：
+   - 新增 `Config.java` 配置类
+   - `MOCK_MODE`：控制是否使用模拟网络响应
+   - `DEBUG_MODE`：控制显示用户界面还是开发测试界面
+
+4. **UI资源整合**：
+   - 合并了前端的按钮样式资源（`btn_speak_material.xml` 等）
+   - 合并了按钮动画资源（`button_press.xml`、`button_release.xml`）
+   - 布局文件支持两套界面的切换显示
+
+5. **工具类新增**：
+   - `AudioRecorderManager.java`：音频录制管理器（PCM格式，16kHz采样率）
+   - `JsonUtils.java`：JSON转Map工具类
+   - `ScreenshotManager.java`：截图管理器
+
+#### 使用说明：
+
+- **切换到调试模式**：将 `Config.DEBUG_MODE` 设置为 `true`，重新编译即可显示手动输入界面
+- **切换到用户模式**：将 `Config.DEBUG_MODE` 设置为 `false`（默认），显示语音交互界面
+
+#### 合并说明：
+
+本次合并保留了后端开发的所有核心文件：
+- `service/AutoGLMService.java`：无障碍服务，真正执行手机操作
+- `manager/AgentManager.java`：WebSocket通信与任务调度
+- `manager/AccessibilityScreenshotManager.java`：无障碍截图
+- `utils/AppRegistry.java`：App名称到包名的映射表
+- `App.java`：全局Application类
+
+前端PR中的stub版本 `AutoGLMService.java` 未被采用，因为后端版本包含完整的手势执行逻辑。
