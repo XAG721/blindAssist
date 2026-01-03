@@ -13,6 +13,7 @@ build/
 */build/
 local.properties
 .cxx/
+gradle.properties
 
 # Android Studio
 captures/
@@ -57,3 +58,4 @@ server/mvnw.cmd
 .externalNativeBuild
 .cxx
 local.properties
+gradle.properties

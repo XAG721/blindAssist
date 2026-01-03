@@ -21,6 +21,10 @@ public class ImageCaptureManager {
         // TODO: 初始化 CameraX 或 Camera2
     }
 
+    public void release() {
+        // TODO: 释放摄像头资源
+    }
+
     public byte[] captureCurrentFrame() {
         // TODO: 从预览流抓取当前帧二进制数据
         return new byte[0];

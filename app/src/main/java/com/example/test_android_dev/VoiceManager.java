@@ -42,7 +42,8 @@ public class VoiceManager {
 
     private static final int MAX_TTS_TEXT_LENGTH = 3500;
 
-    private VoiceManager() {}
+    private VoiceManager() {
+    }
 
     public static synchronized VoiceManager getInstance() {
         if (instance == null) {
@@ -172,13 +173,20 @@ public class VoiceManager {
 
     private void setupUtteranceListener() {
         tts.setOnUtteranceProgressListener(new UtteranceProgressListener() {
-            @Override public void onStart(String utteranceId) { Log.d(TAG, "开始播报: " + utteranceId); }
-            @Override public void onDone(String utteranceId) {
+            @Override
+            public void onStart(String utteranceId) {
+                Log.d(TAG, "开始播报: " + utteranceId);
+            }
+
+            @Override
+            public void onDone(String utteranceId) {
                 Log.d(TAG, "播报完成: " + utteranceId);
                 Runnable cb = utteranceCallbacks.remove(utteranceId);
                 if (cb != null) mainHandler.post(cb);
             }
-            @Override public void onError(String utteranceId) {
+
+            @Override
+            public void onError(String utteranceId) {
                 Log.e(TAG, "播报错误: " + utteranceId);
                 utteranceCallbacks.remove(utteranceId);
             }
@@ -186,7 +194,9 @@ public class VoiceManager {
     }
 
 
-    public void speak(String text) { speak(text, null); }
+    public void speak(String text) {
+        speak(text, null);
+    }
 
     public void speak(String text, Runnable onDone) {
         if (isTtsReady && tts != null) {
@@ -209,7 +219,9 @@ public class VoiceManager {
         }
     }
 
-    public void speakImmediate(String text) { speakImmediate(text, null); }
+    public void speakImmediate(String text) {
+        speakImmediate(text, null);
+    }
 
     private void executeSpeak(String text, int queueMode, Runnable onDone) {
         if (text == null || text.trim().isEmpty()) {
@@ -280,7 +292,11 @@ public class VoiceManager {
 
 
     // ASR (Speech-to-Text) Section
-    public interface VoiceCallback { void onResult(String text); void onError(String error); }
+    public interface VoiceCallback {
+        void onResult(String text);
+
+        void onError(String error);
+    }
 
     public void startListening(VoiceCallback callback) {
         if (speechRecognizer == null) {
@@ -301,11 +317,28 @@ public class VoiceManager {
     }
 
     private final RecognitionListener recognitionListener = new RecognitionListener() {
-        @Override public void onReadyForSpeech(Bundle params) { Log.d(TAG, "ASR: onReadyForSpeech"); }
-        @Override public void onBeginningOfSpeech() { Log.d(TAG, "ASR: onBeginningOfSpeech"); }
-        @Override public void onRmsChanged(float rmsdB) {}
-        @Override public void onBufferReceived(byte[] buffer) {}
-        @Override public void onEndOfSpeech() { Log.d(TAG, "ASR: onEndOfSpeech"); }
+        @Override
+        public void onReadyForSpeech(Bundle params) {
+            Log.d(TAG, "ASR: onReadyForSpeech");
+        }
+
+        @Override
+        public void onBeginningOfSpeech() {
+            Log.d(TAG, "ASR: onBeginningOfSpeech");
+        }
+
+        @Override
+        public void onRmsChanged(float rmsdB) {
+        }
+
+        @Override
+        public void onBufferReceived(byte[] buffer) {
+        }
+
+        @Override
+        public void onEndOfSpeech() {
+            Log.d(TAG, "ASR: onEndOfSpeech");
+        }
 
         @Override
         public void onError(int error) {
@@ -333,33 +366,62 @@ public class VoiceManager {
             }
             currentVoiceCallback = null;
         }
-        @Override public void onPartialResults(Bundle partialResults) {}
-        @Override public void onEvent(int eventType, Bundle params) {}
+
+        @Override
+        public void onPartialResults(Bundle partialResults) {
+        }
+
+        @Override
+        public void onEvent(int eventType, Bundle params) {
+        }
     };
 
     private String getErrorText(int errorCode) {
         switch (errorCode) {
-            case SpeechRecognizer.ERROR_AUDIO: return "音频录制错误";
-            case SpeechRecognizer.ERROR_CLIENT: return "客户端错误";
-            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS: return "权限不足";
-            case SpeechRecognizer.ERROR_NETWORK: return "网络错误";
-            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT: return "网络超时";
-            case SpeechRecognizer.ERROR_NO_MATCH: return "未匹配到结果";
-            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY: return "识别器繁忙";
-            case SpeechRecognizer.ERROR_SERVER: return "服务器错误";
-            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT: return "未检测到语音输入";
-            default: return "未知错误";
+            case SpeechRecognizer.ERROR_AUDIO:
+                return "音频录制错误";
+            case SpeechRecognizer.ERROR_CLIENT:
+                return "客户端错误";
+            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
+                return "权限不足";
+            case SpeechRecognizer.ERROR_NETWORK:
+                return "网络错误";
+            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
+                return "网络超时";
+            case SpeechRecognizer.ERROR_NO_MATCH:
+                return "未匹配到结果";
+            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
+                return "识别器繁忙";
+            case SpeechRecognizer.ERROR_SERVER:
+                return "服务器错误";
+            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
+                return "未检测到语音输入";
+            default:
+                return "未知错误";
         }
     }
 
     public void destroy() {
         Log.d(TAG, "正在销毁 VoiceManager 资源");
-        if (tts != null) { tts.stop(); tts.shutdown(); }
-        if (speechRecognizer != null) { mainHandler.post(speechRecognizer::destroy); }
+        if (tts != null) {
+            tts.stop();
+            tts.shutdown();
+        }
+        if (speechRecognizer != null) {
+            mainHandler.post(speechRecognizer::destroy);
+        }
         instance = null;
     }
 
     private static class PendingUtterance {
-        String text; boolean isImmediate; Runnable onDoneCallback;
-        PendingUtterance(String t, boolean i, Runnable c) { text = t; isImmediate = i; onDoneCallback = c; }
-    
+        String text;
+        boolean isImmediate;
+        Runnable onDoneCallback;
+
+        PendingUtterance(String t, boolean i, Runnable c) {
+            text = t;
+            isImmediate = i;
+            onDoneCallback = c;
+        }
+    }
+}
