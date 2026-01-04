@@ -7,7 +7,6 @@ import android.content.Intent;
 import android.content.pm.PackageManager;
 import android.os.Bundle;
 import android.provider.Settings;
-import android.speech.SpeechRecognizer;
 import android.text.InputType;
 import android.text.TextUtils;
 import android.util.DisplayMetrics;
@@ -30,6 +29,7 @@ import androidx.core.content.ContextCompat;
 
 import com.example.test_android_dev.manager.AgentManager;
 import com.example.test_android_dev.service.AutoGLMService;
+import com.example.test_android_dev.asr.AsrManager;
 
 /**
  * 应用入口 Activity
@@ -45,6 +45,15 @@ public class MainActivity extends AppCompatActivity {
     private Button voiceButton;
     private TextView statusText;
     private VoiceManager.VoiceCallback currentVoiceCallback;
+    
+    // 按钮状态管理
+    private volatile boolean isButtonPressed = false; // 按钮是否被按下（正在录音）
+    private volatile boolean isRecognizing = false;   // 是否正在识别（已停止录音，等待结果）
+    
+    // 识别超时处理
+    private android.os.Handler timeoutHandler = new android.os.Handler(android.os.Looper.getMainLooper());
+    private Runnable recognitionTimeoutRunnable;
+    private static final long RECOGNITION_TIMEOUT = 8000; // 8秒超时
 
     // 测试界面相关
     private EditText etCommand;
@@ -88,59 +97,166 @@ public class MainActivity extends AppCompatActivity {
 
     /**
      * 设置语音交互界面（用户模式）
+     * 按住说话逻辑：
+     * - 按下：开始录音，显示"正在听..."
+     * - 松开：停止录音，显示"识别中..."，等待结果
+     * - 识别中：不响应任何点击
      */
     @SuppressLint("ClickableViewAccessibility")
     private void setupVoiceUI() {
         voiceButton.setOnTouchListener((v, event) -> {
             switch (event.getAction()) {
                 case MotionEvent.ACTION_DOWN:
+                    Log.d(TAG, "ACTION_DOWN, isRecognizing=" + isRecognizing + ", isButtonPressed=" + isButtonPressed);
+                    
+                    // 识别中状态，忽略所有点击
+                    if (isRecognizing) {
+                        Log.d(TAG, "正在识别中，忽略点击");
+                        return true;
+                    }
+                    
+                    // 防止重复按下
+                    if (isButtonPressed) {
+                        Log.d(TAG, "按钮已按下，忽略");
+                        return true;
+                    }
+                    
+                    isButtonPressed = true;
+                    
                     // 播放按下动画
                     Animation pressAnim = AnimationUtils.loadAnimation(this, R.anim.button_press);
                     voiceButton.startAnimation(pressAnim);
 
                     // 检查语音识别是否可用
-                    if (!SpeechRecognizer.isRecognitionAvailable(this)) {
+                    if (!VoiceManager.getInstance().isAsrAvailable()) {
+                        isButtonPressed = false;
                         showTextInputDialog();
                         return true;
                     }
 
-                    voiceButton.setText("正在听...");
-                    voiceButton.setBackground(getDrawable(R.drawable.btn_speak_background));
-                    statusText.setText("请说话...");
-
-                    currentVoiceCallback = new VoiceManager.VoiceCallback() {
-                        @Override
-                        public void onResult(String text) {
-                            voiceButton.setText("按住说话");
-                            voiceButton.setBackground(getDrawable(R.drawable.btn_speak_material));
-                            statusText.setText("处理中...");
-                            currentVoiceCallback = null;
-                            handleVoiceResult(text);
-                        }
-
-                        @Override
-                        public void onError(String error) {
-                            voiceButton.setText("按住说话");
-                            voiceButton.setBackground(getDrawable(R.drawable.btn_speak_material));
-                            statusText.setText("请重试");
-                            currentVoiceCallback = null;
-                            VoiceManager.getInstance().speak("没有听到声音，请重试");
-                        }
-                    };
-                    VoiceManager.getInstance().startListening(currentVoiceCallback);
+                    // 开始录音
+                    startVoiceRecognition();
                     v.performClick();
                     break;
 
                 case MotionEvent.ACTION_UP:
+                case MotionEvent.ACTION_CANCEL:
+                    Log.d(TAG, "ACTION_UP/CANCEL, isButtonPressed=" + isButtonPressed);
+                    
+                    // 如果不是按下状态，忽略
+                    if (!isButtonPressed) {
+                        Log.d(TAG, "按钮未按下，忽略松开事件");
+                        return true;
+                    }
+                    
+                    isButtonPressed = false;
+                    
                     // 播放释放动画
                     Animation releaseAnim = AnimationUtils.loadAnimation(this, R.anim.button_release);
                     voiceButton.startAnimation(releaseAnim);
+                    
+                    // 进入识别状态
+                    isRecognizing = true;
+                    voiceButton.setText("识别中...");
+                    statusText.setText("正在识别...");
+                    
+                    // 停止录音，等待识别结果
+                    Log.d(TAG, "用户松开按钮，停止录音，等待识别结果");
+                    VoiceManager.getInstance().stopListening();
+                    
+                    // 设置识别超时
+                    startRecognitionTimeout();
                     break;
             }
             return true;
         });
 
-        VoiceManager.getInstance().speakImmediate("欢迎使用，请按住屏幕中央的按钮对我说话");
+        // 显示当前使用的 ASR 引擎
+        String engineName = VoiceManager.getInstance().getCurrentAsrEngineName();
+        Log.i(TAG, "当前 ASR 引擎: " + engineName);
+    }
+    
+    /**
+     * 开始语音识别
+     */
+    private void startVoiceRecognition() {
+        voiceButton.setText("正在听...");
+        voiceButton.setBackground(getDrawable(R.drawable.btn_speak_background));
+        statusText.setText("请说话...");
+
+        currentVoiceCallback = new VoiceManager.VoiceCallback() {
+            @Override
+            public void onResult(String text) {
+                Log.d(TAG, "语音识别成功: " + text);
+                runOnUiThread(() -> {
+                    cancelRecognitionTimeout();
+                    resetButtonState();
+                    statusText.setText("处理中...");
+                });
+                handleVoiceResult(text);
+            }
+
+            @Override
+            public void onError(String error) {
+                Log.d(TAG, "语音识别错误: " + error);
+                runOnUiThread(() -> {
+                    cancelRecognitionTimeout();
+                    resetButtonState();
+                    // 根据错误类型显示不同提示
+                    if (error.contains("网络")) {
+                        statusText.setText("网络错误");
+                    } else if (error.contains("超时")) {
+                        statusText.setText("识别超时");
+                    } else {
+                        statusText.setText("请重试");
+                    }
+                });
+                
+                // 根据错误类型播报不同提示
+                if (error.contains("网络") || error.contains("超时")) {
+                    VoiceManager.getInstance().speakImmediate("网络连接失败，请检查网络后重试");
+                } else if (!"客户端错误".equals(error) && !"识别器繁忙".equals(error) && !"识别器繁忙，请稍后重试".equals(error)) {
+                    VoiceManager.getInstance().speakImmediate("没有听到声音，请重试");
+                }
+            }
+        };
+        VoiceManager.getInstance().startListening(currentVoiceCallback);
+    }
+    
+    /**
+     * 开始识别超时计时
+     */
+    private void startRecognitionTimeout() {
+        cancelRecognitionTimeout();
+        recognitionTimeoutRunnable = () -> {
+            Log.w(TAG, "识别超时，强制重置");
+            VoiceManager.getInstance().cancelListening();
+            resetButtonState();
+            statusText.setText("识别超时");
+            VoiceManager.getInstance().speakImmediate("识别超时，请重试");
+        };
+        timeoutHandler.postDelayed(recognitionTimeoutRunnable, RECOGNITION_TIMEOUT);
+    }
+    
+    /**
+     * 取消识别超时计时
+     */
+    private void cancelRecognitionTimeout() {
+        if (recognitionTimeoutRunnable != null) {
+            timeoutHandler.removeCallbacks(recognitionTimeoutRunnable);
+            recognitionTimeoutRunnable = null;
+        }
+    }
+    
+    /**
+     * 重置按钮状态
+     */
+    private void resetButtonState() {
+        voiceButton.setText("按住说话");
+        voiceButton.setBackground(getDrawable(R.drawable.btn_speak_material));
+        isRecognizing = false;
+        isButtonPressed = false;
+        currentVoiceCallback = null;
     }
 
     /**
@@ -171,7 +287,11 @@ public class MainActivity extends AppCompatActivity {
         statusText.setText("执行中: " + text);
 
         // 检查无障碍服务
-        if (AutoGLMService.getInstance() == null) {
+        AutoGLMService service = AutoGLMService.getInstance();
+        Log.d(TAG, "AutoGLMService.getInstance() 返回: " + (service != null ? "非空" : "null"));
+        
+        if (service == null) {
+            Log.w(TAG, "无障碍服务未启动，引导用户开启");
             Toast.makeText(this, "请先开启无障碍服务！", Toast.LENGTH_LONG).show();
             VoiceManager.getInstance().speak("请先开启无障碍服务");
             Intent intent = new Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS);
@@ -179,12 +299,15 @@ public class MainActivity extends AppCompatActivity {
             return;
         }
 
+        Log.d(TAG, "无障碍服务已启动，准备启动任务");
+        
         // 获取屏幕尺寸并启动任务
         DisplayMetrics metrics = new DisplayMetrics();
         getWindowManager().getDefaultDisplay().getRealMetrics(metrics);
         int width = metrics.widthPixels;
         int height = metrics.heightPixels;
-
+        
+        Log.d(TAG, "屏幕尺寸: " + width + "x" + height);
         AgentManager.getInstance().startTask(text, width, height);
     }
 
@@ -248,7 +371,80 @@ public class MainActivity extends AppCompatActivity {
     }
 
     private void initCoreManagers() {
-        VoiceManager.getInstance().init(getApplicationContext());
+        Log.d(TAG, "========== initCoreManagers() 开始 ==========");
+        
+        // 先显示加载状态
+        if (voiceButton != null) {
+            voiceButton.setVisibility(View.INVISIBLE);
+        }
+        if (statusText != null) {
+            statusText.setText("正在初始化语音引擎...");
+        }
+        
+        Log.d(TAG, "准备调用 VoiceManager.init()");
+        
+        // 初始化 VoiceManager，带回调
+        VoiceManager.getInstance().init(getApplicationContext(), new AsrManager.InitCallback() {
+            @Override
+            public void onInitStart() {
+                runOnUiThread(() -> {
+                    if (statusText != null) {
+                        statusText.setText("正在初始化语音引擎...");
+                    }
+                });
+            }
+            
+            @Override
+            public void onInitProgress(String message) {
+                runOnUiThread(() -> {
+                    if (statusText != null) {
+                        statusText.setText(message);
+                    }
+                });
+            }
+            
+            @Override
+            public void onInitComplete() {
+                runOnUiThread(() -> {
+                    Log.i(TAG, "语音引擎初始化完成");
+                    if (voiceButton != null) {
+                        voiceButton.setVisibility(View.VISIBLE);
+                    }
+                    if (statusText != null) {
+                        statusText.setText("按住按钮说话");
+                    }
+                    // 播报欢迎语
+                    VoiceManager.getInstance().speakImmediate("欢迎使用，请按住屏幕中央的按钮对我说话");
+                });
+            }
+            
+            @Override
+            public void onInitFailed(String error) {
+                runOnUiThread(() -> {
+                    Log.e(TAG, "语音引擎初始化失败: " + error);
+                    if (voiceButton != null) {
+                        voiceButton.setVisibility(View.VISIBLE);
+                    }
+                    if (statusText != null) {
+                        statusText.setText("初始化失败，点击重试");
+                    }
+                    Toast.makeText(MainActivity.this, "语音引擎初始化失败: " + error, Toast.LENGTH_LONG).show();
+                });
+            }
+        });
+        
+        // 配置讯飞语音识别（如果已配置凭证）
+        if (!Config.XUNFEI_APP_ID.isEmpty() && !Config.XUNFEI_API_KEY.isEmpty() && !Config.XUNFEI_API_SECRET.isEmpty()) {
+            VoiceManager.getInstance().configureXunfeiAsr(
+                    Config.XUNFEI_APP_ID,
+                    Config.XUNFEI_API_KEY,
+                    Config.XUNFEI_API_SECRET
+            );
+            Log.i(TAG, "讯飞 ASR 已配置");
+        } else {
+            Log.w(TAG, "讯飞 ASR 未配置，将使用系统语音识别（需要 Google 服务或国产手机自带服务）");
+        }
+        
         ImageCaptureManager.getInstance().init(this);
         NetworkClient.getInstance().init(getApplicationContext());
     }

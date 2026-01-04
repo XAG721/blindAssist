@@ -54,6 +54,11 @@ public class AgentManager {
      * @param height 屏幕高度 (px)
      */
     public void startTask(String taskPrompt, int width, int height) {
+        Log.d(TAG, "=== startTask() 被调用 ===");
+        Log.d(TAG, "任务: " + taskPrompt);
+        Log.d(TAG, "屏幕尺寸: " + width + "x" + height);
+        Log.d(TAG, "isTaskRunning: " + isTaskRunning);
+        
         if (isTaskRunning) {
             Log.w(TAG, "任务已在运行中，请先停止");
             return;
@@ -62,7 +67,7 @@ public class AgentManager {
         this.screenHeight = height;
         this.isTaskRunning = true;
 
-        Log.d(TAG, "开始任务: " + taskPrompt);
+        Log.d(TAG, "准备连接 WebSocket: " + SERVER_URL);
         connectWebSocket(taskPrompt);
     }
 

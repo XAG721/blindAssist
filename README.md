@@ -436,7 +436,7 @@ Android 应用需要连接本地运行的 Spring Boot 服务。根据网络环�
 2.  **注意事项**：确保电脑防火墙已允许 8090 端口的入站连接。
 
 
-### 2026-01-04 修改
+### 2026-01-04 修改（早期）
 
 feat: 合并前端语音交互界面与后端AutoGLM控制逻辑
 
@@ -484,3 +484,168 @@ feat: 合并前端语音交互界面与后端AutoGLM控制逻辑
 - `App.java`：全局Application类
 
 前端PR中的stub版本 `AutoGLMService.java` 未被采用，因为后端版本包含完整的手势执行逻辑。
+
+
+### 2026-01-05 修改
+
+feat: 重构ASR多引擎架构并修复按住说话交互逻辑
+
+本次更新全面重构了语音识别模块，实现了多引擎自动切换架构，并彻底修复了"按住说话"按钮的交互问题，确保在各种网络环境和手机型号上都能正常工作。
+
+#### 核心变更：
+
+**1. 多引擎ASR架构重构**
+- 新增 `asr/` 包，实现统一的ASR引擎接口和管理器：
+  - `AsrEngine.java`：ASR引擎抽象接口，定义标准化的识别流程
+  - `AsrManager.java`：多引擎管理器，自动选择和切换可用引擎
+  - `VoskAsrEngine.java`：Vosk离线语音识别引擎（完全离线，无需网络）
+  - `SystemAsrEngine.java`：系统原生语音识别引擎（需要网络连接）
+  - `XunfeiAsrEngine.java`：讯飞WebSocket流式语音识别引擎（需配置API凭证）
+
+**2. 引擎优先级与自动降级**
+- 优先级顺序：Vosk离线识别 → 系统ASR → 讯飞ASR
+- 网络错误时自动尝试备用引擎
+- 支持运行时动态切换引擎
+
+**3. Vosk离线语音识别集成**
+- 集成 `vosk-android:0.3.47` 依赖
+- 支持完全离线的中文语音识别（无需网络，保护隐私）
+- 智能检测多种模型目录结构（支持直接解压或嵌套目录）
+- 模型异步加载机制，首次使用时自动等待（最多5秒）
+- 模型文件存在性检查，确保引擎可用性
+
+**4. 按住说话交互完全重构**
+- **修复核心问题**：
+  - 松开按钮后仍持续监听 → 现在松开时正确调用 `stopListening()`
+  - 快速点击导致"识别器繁忙" → 添加500ms防抖机制
+  - 识别中仍可点击导致状态混乱 → 添加 `isRecognizing` 状态锁
+  - TTS语音累积播放 → 使用 `speakImmediate()` 清空队列
+  
+- **新增状态管理**：
+  - `isButtonPressed`：按钮是否被按下（正在录音）
+  - `isRecognizing`：是否正在识别（已停止录音，等待结果）
+  - 识别超时机制（10秒），防止无限等待
+
+- **交互流程优化**：
+  ```
+  按下 → 开始录音 → 显示"正在听..."
+  松开 → 停止录音 → 显示"识别中..." → 等待结果
+  结果 → 重置状态 → 显示"按住说话"
+  ```
+
+**5. 系统ASR增强**
+- 添加详细的音频接收日志：
+  - `onBufferReceived`：确认收到音频数据
+  - `onRmsChanged`：实时音量监控（用于诊断麦克风）
+  - `onBeginningOfSpeech`：检测到用户开始说话
+  - `onEndOfSpeech`：检测到用户停止说话
+- 添加5秒识别超时机制
+- 改进网络错误提示和处理
+- 防止"识别器繁忙"错误（最小重启间隔800ms）
+
+**6. 讯飞ASR WebSocket实现**
+- 完整的WebSocket流式识别实现
+- 支持实时部分结果（`onPartialResult`）
+- 动态修正模式（`wpgs`）支持
+- 完善的鉴权机制（HmacSHA256签名）
+- 自动音频录制和帧发送（40ms/帧）
+
+**7. VoiceManager重构**
+- 从直接使用 `SpeechRecognizer` 改为使用 `AsrManager`
+- 新增方法：
+  - `configureXunfeiAsr()`：配置讯飞API凭证
+  - `getCurrentAsrEngineName()`：获取当前使用的引擎名称
+  - `isAsrAvailable()`：检查ASR是否可用
+  - `cancelListening()`：取消语音监听
+- 改进错误处理和状态管理
+
+**8. 配置项新增**
+- `Config.java` 中添加讯飞ASR配置：
+  ```java
+  public static final String XUNFEI_APP_ID = "";
+  public static final String XUNFEI_API_KEY = "";
+  public static final String XUNFEI_API_SECRET = "";
+  ```
+
+#### 使用指南：
+
+**Vosk离线模型配置（推荐）：**
+1. 下载中文模型：https://alphacephei.com/vosk/models
+   - 推荐：`vosk-model-small-cn-0.22`（约50MB）
+2. 将模型放置到以下任一位置：
+   - `app/src/main/assets/model-cn/vosk-model-small-cn-0.22/`
+   - `app/src/main/assets/model-cn/`（解压后内容直接放入）
+   - `app/src/main/assets/vosk-model-small-cn-0.22/`
+
+**讯飞ASR配置（可选，作为兜底）：**
+1. 注册讯飞开放平台：https://www.xfyun.cn/
+2. 创建应用并获取凭证
+3. 在 `Config.java` 中填入凭证
+
+**系统ASR（自动可用）：**
+- 国产手机（小米、华为、OPPO等）自带语音服务
+- 需要网络连接
+- 无需额外配置
+
+#### 技术亮点：
+
+- **多引擎架构**：统一接口，易于扩展新引擎
+- **自动降级**：网络故障时自动切换到离线引擎
+- **状态机管理**：严格的状态转换，避免竞态条件
+- **防抖机制**：防止快速点击导致的错误
+- **异步加载**：模型加载不阻塞UI线程
+- **详细日志**：完整的调试信息，便于问题诊断
+
+#### 已知问题修复：
+
+- ✅ 松开按钮后仍持续监听
+- ✅ 快速点击导致"识别器繁忙"
+- ✅ 识别中仍可点击导致状态混乱
+- ✅ TTS语音累积播放
+- ✅ 系统ASR需要网络但无提示
+- ✅ 麦克风权限正常但无法识别
+- ✅ 模型加载时机不当导致引擎不可用
+
+     - `VoskAsrEngine.java`：Vosk离线语音识别（无需网络）
+     - `SystemAsrEngine.java`：系统原生语音识别（需要网络）
+     - `XunfeiAsrEngine.java`：讯飞WebSocket流式语音识别（需配置API凭证）
+   - 引擎优先级：Vosk离线 → 系统ASR → 讯飞ASR
+
+2. **Vosk离线语音识别支持**：
+   - 集成 `vosk-android:0.3.47` 依赖
+   - 支持完全离线的中文语音识别
+   - 自动检测多种模型目录结构
+   - 模型异步加载，首次使用时自动等待
+
+3. **按住说话交互修复**：
+   - 修复松开按钮后仍持续监听的问题
+   - 添加 `isButtonPressed` 和 `isProcessingVoice` 状态管理
+   - 在 `ACTION_UP` 时正确调用 `stopListening()`
+   - 添加500ms防抖机制，防止快速点击导致的"识别器繁忙"错误
+   - 使用 `speakImmediate()` 防止TTS语音累积播放
+
+4. **系统ASR增强**：
+   - 添加详细的音频接收日志（`onBufferReceived`、`onRmsChanged`）
+   - 添加5秒识别超时机制
+   - 改进网络错误提示
+
+5. **配置项新增**：
+   - `Config.java` 中添加讯飞ASR配置项（`XUNFEI_APP_ID`、`XUNFEI_API_KEY`、`XUNFEI_API_SECRET`）
+
+#### Vosk离线模型配置：
+
+1. 下载中文模型：https://alphacephei.com/vosk/models （推荐 `vosk-model-small-cn-0.22`，约50MB）
+2. 将模型放置到以下任一位置：
+   - `app/src/main/assets/model-cn/vosk-model-small-cn-0.22/`
+   - `app/src/main/assets/model-cn/`（解压后内容直接放入）
+
+#### 讯飞ASR配置（可选）：
+
+在 `Config.java` 中填入讯飞开放平台凭证：
+```java
+public static final String XUNFEI_APP_ID = "你的APPID";
+public static final String XUNFEI_API_KEY = "你的APIKey";
+public static final String XUNFEI_API_SECRET = "你的APISecret";
+```
+
+---

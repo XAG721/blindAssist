@@ -13,6 +13,9 @@ import android.speech.tts.TextToSpeech;
 import android.speech.tts.UtteranceProgressListener;
 import android.util.Log;
 
+import com.example.test_android_dev.asr.AsrEngine;
+import com.example.test_android_dev.asr.AsrManager;
+
 import java.util.ArrayList;
 import java.util.List;
 import java.util.Locale;
@@ -23,6 +26,10 @@ import java.util.concurrent.ConcurrentHashMap;
 /**
  * 封装语音输入/输出（ASR/TTS）
  * 支持中文语音识别和语音合成
+ * 
+ * ASR 支持多引擎：
+ * 1. 讯飞语音识别（需配置 API 凭证，适用于所有手机）
+ * 2. 系统语音识别（需要 Google 服务或国产手机自带服务）
  */
 public class VoiceManager {
 
@@ -30,7 +37,7 @@ public class VoiceManager {
     private static VoiceManager instance;
 
     private TextToSpeech tts;
-    private SpeechRecognizer speechRecognizer;
+    private AsrManager asrManager;
     private VoiceCallback currentVoiceCallback;
 
     private boolean isTtsReady = false;
@@ -54,18 +61,51 @@ public class VoiceManager {
 
 
     public void init(Context context) {
-        Log.d(TAG, "开始初始化 VoiceManager");
+        init(context, null);
+    }
+    
+    /**
+     * 初始化（带回调）
+     */
+    public void init(Context context, AsrManager.InitCallback asrCallback) {
+        Log.d(TAG, "=== VoiceManager.init() 被调用 ===");
         if (tts == null && !isTtsInitializing) {
             isTtsInitializing = true;
             mainHandler.post(() -> initTtsWithFallback(context));
         }
 
-        if (speechRecognizer == null && SpeechRecognizer.isRecognitionAvailable(context)) {
-            mainHandler.post(() -> {
-                speechRecognizer = SpeechRecognizer.createSpeechRecognizer(context);
-                speechRecognizer.setRecognitionListener(recognitionListener);
-            });
+        // 初始化 ASR 管理器（始终调用 init，AsrManager 内部会处理重复初始化）
+        if (asrManager == null) {
+            asrManager = AsrManager.getInstance();
         }
+        // 始终调用 init，让 AsrManager 内部判断是否需要初始化
+        asrManager.init(context, asrCallback);
+        Log.d(TAG, "ASR 引擎: " + asrManager.getCurrentEngineName());
+    }
+    
+    /**
+     * 配置讯飞语音识别
+     * 在讯飞开放平台注册获取凭证：https://www.xfyun.cn/
+     */
+    public void configureXunfeiAsr(String appId, String apiKey, String apiSecret) {
+        if (asrManager != null) {
+            asrManager.configureXunfei(appId, apiKey, apiSecret);
+            Log.d(TAG, "讯飞 ASR 配置完成，当前引擎: " + asrManager.getCurrentEngineName());
+        }
+    }
+    
+    /**
+     * 获取当前 ASR 引擎名称
+     */
+    public String getCurrentAsrEngineName() {
+        return asrManager != null ? asrManager.getCurrentEngineName() : "未初始化";
+    }
+    
+    /**
+     * 检查 ASR 是否可用
+     */
+    public boolean isAsrAvailable() {
+        return asrManager != null && asrManager.isAvailable();
     }
 
     private void initTtsWithFallback(Context context) {
@@ -297,108 +337,79 @@ public class VoiceManager {
 
         void onError(String error);
     }
-
-    public void startListening(VoiceCallback callback) {
-        if (speechRecognizer == null) {
-            Log.e(TAG, "SpeechRecognizer not available.");
-            if (callback != null) mainHandler.post(() -> callback.onError("语音识别服务不可用。"));
-            return;
-        }
-        this.currentVoiceCallback = callback;
-
-        mainHandler.post(() -> {
-            Intent intent = new Intent(RecognizerIntent.ACTION_RECOGNIZE_SPEECH);
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE_MODEL, RecognizerIntent.LANGUAGE_MODEL_FREE_FORM);
-            intent.putExtra(RecognizerIntent.EXTRA_LANGUAGE, Locale.CHINA.toString());
-            intent.putExtra(RecognizerIntent.EXTRA_PARTIAL_RESULTS, false);
-            speechRecognizer.startListening(intent);
-            Log.d(TAG, "startListening... 等待用户说话。");
-        });
+    
+    /**
+     * 检查是否正在监听
+     */
+    public boolean isListening() {
+        return asrManager != null && asrManager.isListening();
     }
 
-    private final RecognitionListener recognitionListener = new RecognitionListener() {
-        @Override
-        public void onReadyForSpeech(Bundle params) {
-            Log.d(TAG, "ASR: onReadyForSpeech");
+    public void startListening(VoiceCallback callback) {
+        if (asrManager == null) {
+            Log.e(TAG, "AsrManager not initialized.");
+            if (callback != null) mainHandler.post(() -> callback.onError("语音识别服务未初始化"));
+            return;
         }
-
-        @Override
-        public void onBeginningOfSpeech() {
-            Log.d(TAG, "ASR: onBeginningOfSpeech");
+        
+        if (!asrManager.isAvailable()) {
+            Log.e(TAG, "No ASR engine available.");
+            if (callback != null) mainHandler.post(() -> callback.onError("语音识别服务不可用，请配置讯飞 ASR 或检查系统语音服务"));
+            return;
         }
-
-        @Override
-        public void onRmsChanged(float rmsdB) {
-        }
-
-        @Override
-        public void onBufferReceived(byte[] buffer) {
-        }
-
-        @Override
-        public void onEndOfSpeech() {
-            Log.d(TAG, "ASR: onEndOfSpeech");
-        }
-
-        @Override
-        public void onError(int error) {
-            String errorMsg = getErrorText(error);
-            Log.e(TAG, "ASR Error: " + errorMsg);
-            if (currentVoiceCallback != null) {
-                currentVoiceCallback.onError(errorMsg);
-                currentVoiceCallback = null;
-            }
-        }
-
-        @Override
-        public void onResults(Bundle results) {
-            ArrayList<String> matches = results.getStringArrayList(SpeechRecognizer.RESULTS_RECOGNITION);
-            if (matches != null && !matches.isEmpty()) {
-                String text = matches.get(0);
+        
+        this.currentVoiceCallback = callback;
+        
+        asrManager.startListening(new AsrEngine.AsrCallback() {
+            @Override
+            public void onResult(String text) {
                 Log.i(TAG, "ASR Result: " + text);
                 if (currentVoiceCallback != null) {
-                    currentVoiceCallback.onResult(text);
-                }
-            } else {
-                if (currentVoiceCallback != null) {
-                    currentVoiceCallback.onError("未听到语音输入");
+                    VoiceCallback cb = currentVoiceCallback;
+                    currentVoiceCallback = null;
+                    mainHandler.post(() -> cb.onResult(text));
                 }
             }
-            currentVoiceCallback = null;
+            
+            @Override
+            public void onPartialResult(String partialText) {
+                // 可以在这里处理实时识别结果
+                Log.d(TAG, "ASR Partial: " + partialText);
+            }
+            
+            @Override
+            public void onError(String error) {
+                Log.e(TAG, "ASR Error: " + error);
+                if (currentVoiceCallback != null) {
+                    VoiceCallback cb = currentVoiceCallback;
+                    currentVoiceCallback = null;
+                    mainHandler.post(() -> cb.onError(error));
+                }
+            }
+        });
+        
+        Log.d(TAG, "startListening... 使用引擎: " + asrManager.getCurrentEngineName());
+    }
+    
+    /**
+     * 停止语音监听
+     */
+    public void stopListening() {
+        Log.d(TAG, "stopListening 被调用");
+        if (asrManager != null) {
+            asrManager.stopListening();
         }
-
-        @Override
-        public void onPartialResults(Bundle partialResults) {
+    }
+    
+    /**
+     * 取消语音监听
+     */
+    public void cancelListening() {
+        Log.d(TAG, "cancelListening 被调用");
+        if (asrManager != null) {
+            asrManager.cancel();
         }
-
-        @Override
-        public void onEvent(int eventType, Bundle params) {
-        }
-    };
-
-    private String getErrorText(int errorCode) {
-        switch (errorCode) {
-            case SpeechRecognizer.ERROR_AUDIO:
-                return "音频录制错误";
-            case SpeechRecognizer.ERROR_CLIENT:
-                return "客户端错误";
-            case SpeechRecognizer.ERROR_INSUFFICIENT_PERMISSIONS:
-                return "权限不足";
-            case SpeechRecognizer.ERROR_NETWORK:
-                return "网络错误";
-            case SpeechRecognizer.ERROR_NETWORK_TIMEOUT:
-                return "网络超时";
-            case SpeechRecognizer.ERROR_NO_MATCH:
-                return "未匹配到结果";
-            case SpeechRecognizer.ERROR_RECOGNIZER_BUSY:
-                return "识别器繁忙";
-            case SpeechRecognizer.ERROR_SERVER:
-                return "服务器错误";
-            case SpeechRecognizer.ERROR_SPEECH_TIMEOUT:
-                return "未检测到语音输入";
-            default:
-                return "未知错误";
-        }
+        currentVoiceCallback = null;
     }
 
     public void destroy() {
@@ -407,8 +418,8 @@ public class VoiceManager {
             tts.stop();
             tts.shutdown();
         }
-        if (speechRecognizer != null) {
-            mainHandler.post(speechRecognizer::destroy);
+        if (asrManager != null) {
+            asrManager.release();
         }
         instance = null;
     }
