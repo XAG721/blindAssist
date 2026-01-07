@@ -28,6 +28,9 @@ import androidx.core.app.ActivityCompat;
 import androidx.core.content.ContextCompat;
 
 import com.example.test_android_dev.manager.AgentManager;
+import com.example.test_android_dev.manager.SoundManager;
+import com.example.test_android_dev.manager.TaskStateManager;
+import com.example.test_android_dev.model.TaskState;
 import com.example.test_android_dev.service.AutoGLMService;
 import com.example.test_android_dev.asr.AsrManager;
 
@@ -69,6 +72,37 @@ public class MainActivity extends AppCompatActivity {
         requestBasicPermissions();
         initCoreManagers();
         setupUI();
+        
+        // 检查是否有未完成的任务
+        checkIncompleteTask();
+    }
+    
+    /**
+     * 检查并恢复未完成的任务
+     */
+    private void checkIncompleteTask() {
+        if (AgentManager.getInstance().hasIncompleteTask()) {
+            AgentManager.getInstance().promptTaskRecovery(this, new TaskStateManager.TaskRecoveryCallback() {
+                @Override
+                public void onTaskRecovered(TaskState state) {
+                    Log.d(TAG, "恢复任务: " + state.getTaskPrompt());
+                    statusText.setText("恢复任务中...");
+                    AgentManager.getInstance().resumeTask(state);
+                }
+
+                @Override
+                public void onTaskDiscarded() {
+                    Log.d(TAG, "用户放弃恢复任务");
+                }
+            });
+        }
+    }
+    
+    @Override
+    protected void onResume() {
+        super.onResume();
+        // 从后台恢复时检查连接状态
+        AgentManager.getInstance().checkAndReconnectIfNeeded();
     }
 
     private void setupUI() {
@@ -134,6 +168,9 @@ public class MainActivity extends AppCompatActivity {
                         return true;
                     }
 
+                    // 播放开始录音提示音
+                    SoundManager.getInstance().playStartTone();
+                    
                     // 开始录音
                     startVoiceRecognition();
                     v.performClick();
@@ -154,6 +191,9 @@ public class MainActivity extends AppCompatActivity {
                     // 播放释放动画
                     Animation releaseAnim = AnimationUtils.loadAnimation(this, R.anim.button_release);
                     voiceButton.startAnimation(releaseAnim);
+                    
+                    // 播放结束录音提示音
+                    SoundManager.getInstance().playStopTone();
                     
                     // 进入识别状态
                     isRecognizing = true;
@@ -447,6 +487,12 @@ public class MainActivity extends AppCompatActivity {
         
         ImageCaptureManager.getInstance().init(this);
         NetworkClient.getInstance().init(getApplicationContext());
+        
+        // 初始化提示音管理器
+        SoundManager.getInstance().init(getApplicationContext());
+        
+        // 初始化AgentManager（后台保活功能）
+        AgentManager.getInstance().init(getApplicationContext());
     }
 
     private void requestBasicPermissions() {
@@ -487,6 +533,7 @@ public class MainActivity extends AppCompatActivity {
         }
         AgentManager.getInstance().stopTask();
         ImageCaptureManager.getInstance().release();
+        SoundManager.getInstance().release();
         VoiceManager.getInstance().destroy();
     }
 }

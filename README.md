@@ -649,3 +649,132 @@ public static final String XUNFEI_API_SECRET = "你的APISecret";
 ```
 
 ---
+
+
+### 2026-01-08 修改
+
+feat: 实现后台保活功能，解决跨应用操作时通信中断问题
+
+本次更新解决了AutoGLM在执行跨应用操作（如调起微信、美团等）时，主应用进入后台导致WebSocket连接断开、任务执行中断的问题。
+
+#### 问题背景：
+
+当AutoGLM执行"Launch"指令调起其他应用时，主应用会被切换到后台。在Android系统的电池优化策略下，后台应用可能会：
+- WebSocket连接被系统断开
+- 任务执行循环中断
+- 无法继续与AutoGLM服务器通信
+- 后续复杂操作无法执行
+
+#### 解决方案：
+
+实现了完整的后台保活机制，包含以下核心组件：
+
+**1. 前台服务保活 (`BackgroundKeepAliveService`)**
+- 使用Android前台服务机制，显示持久通知
+- 返回 `START_STICKY` 确保服务被杀死后自动重启
+- 通知栏显示当前任务状态和连接状态
+- 支持点击通知返回应用、停止任务等操作
+
+**2. WebSocket连接管理 (`WebSocketConnectionManager`)**
+- 心跳机制：每30秒发送心跳包检测连接状态
+- 心跳超时检测：10秒内无响应标记连接不健康
+- 指数退避重连：1s → 2s → 4s → 8s → 30s（上限）
+- 最大重连次数：5次，超过后通知用户
+- 从后台恢复时自动检查连接健康状态
+
+**3. 唤醒锁管理 (`WakeLockManager`)**
+- 任务开始时获取 `PARTIAL_WAKE_LOCK`
+- 防止设备在任务执行期间进入休眠
+- 30分钟超时警告机制
+- 任务结束时自动释放，防止电池消耗
+
+**4. 任务状态持久化 (`TaskStateManager`)**
+- 使用SharedPreferences保存任务状态
+- 支持应用意外终止后的任务恢复
+- 启动时检测未完成任务并提示用户恢复或放弃
+
+**5. 数据模型**
+- `TaskState`：任务状态数据类，包含任务ID、指令、步骤、屏幕尺寸等
+- `ConnectionState`：连接状态枚举（DISCONNECTED/CONNECTING/CONNECTED/RECONNECTING）
+- `ConnectionStatus`：详细连接状态，包含心跳时间、重连次数、错误信息等
+
+#### 新增权限：
+
+```xml
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE" />
+<uses-permission android:name="android.permission.FOREGROUND_SERVICE_SPECIAL_USE" />
+<uses-permission android:name="android.permission.WAKE_LOCK" />
+<uses-permission android:name="android.permission.VIBRATE" />
+<uses-permission android:name="android.permission.POST_NOTIFICATIONS" />
+```
+
+#### 重构的组件：
+
+- `AgentManager`：集成所有保活组件，统一管理任务生命周期
+- `MainActivity`：添加任务恢复检查和onResume连接检查
+
+#### 技术规格：
+
+| 参数 | 值 |
+|------|-----|
+| 心跳间隔 | 30秒 |
+| 心跳超时 | 10秒 |
+| 最大重连次数 | 5次 |
+| 重连延迟序列 | 1s, 2s, 4s, 8s, 30s |
+| 唤醒锁超时警告 | 30分钟 |
+
+#### 用户体验改进：
+
+- 任务执行时通知栏显示状态，用户可随时了解进度
+- 连接断开时自动重连，无需用户干预
+- 重连失败时振动提醒并显示错误通知
+- 应用意外关闭后可恢复未完成的任务
+
+#### 文件变更：
+
+**新增文件：**
+- `model/TaskState.java` - 任务状态数据类
+- `model/ConnectionState.java` - 连接状态枚举
+- `model/ConnectionStatus.java` - 连接状态详情类
+- `manager/WakeLockManager.java` - 唤醒锁管理器
+- `manager/TaskStateManager.java` - 任务状态管理器
+- `manager/WebSocketConnectionManager.java` - WebSocket连接管理器
+- `service/BackgroundKeepAliveService.java` - 后台保活服务
+
+**修改文件：**
+- `manager/AgentManager.java` - 重构，集成保活组件
+- `MainActivity.java` - 添加任务恢复和连接检查
+- `AndroidManifest.xml` - 添加权限和服务声明
+
+#### 设计文档：
+
+完整的需求、设计和实现计划文档位于：
+- `.kiro/specs/background-keep-alive/requirements.md`
+- `.kiro/specs/background-keep-alive/design.md`
+- `.kiro/specs/background-keep-alive/tasks.md`
+
+
+### 2026-01-08 修改（追加）
+
+feat: 按住说话提示音功能
+
+为提升用户交互体验，在按住说话功能中增加了音效反馈：
+
+#### 功能说明：
+
+- **按下按钮时**：播放清脆的"嘟"声提示音，表示开始录音
+- **松开按钮时**：播放确认音，表示录音结束，进入识别状态
+
+#### 技术实现：
+
+- 新增 `SoundManager` 管理器，使用 Android 系统 `ToneGenerator` 播放提示音
+- 使用系统内置音效，无需额外音频资源文件
+- 音量设置为媒体音量的 80%，不会过于刺耳
+
+#### 文件变更：
+
+**新增文件：**
+- `manager/SoundManager.java` - 提示音管理器
+
+**修改文件：**
+- `MainActivity.java` - 在按住说话交互中集成提示音播放
